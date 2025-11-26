@@ -50,21 +50,48 @@ export const parseGithubUrl = (url: string): { owner: string; repo: string } | n
   }
 };
 
-// Helper to fetch file content
+// Helper to fetch architecturally significant file content
 const fetchFileContents = async (files: FileNode[]): Promise<FileNode[]> => {
   const interestingExtensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.css', '.html', '.json', '.md'];
   
-  const sortedFiles = [...files].sort((a, b) => {
-      const aScore = (a.path.startsWith('src/') ? 2 : 0) + (a.path.split('/').length === 1 ? 1 : 0);
-      const bScore = (b.path.startsWith('src/') ? 2 : 0) + (b.path.split('/').length === 1 ? 1 : 0);
-      return bScore - aScore;
-  });
-
-  const candidates = sortedFiles
+  // Score files based on architectural significance
+  const scoreFile = (file: FileNode): number => {
+    let score = 0;
+    const path = file.path.toLowerCase();
+    
+    // High priority: Entry points, configs, main architecture files
+    if (path.includes('main.') || path.includes('index.') || path.includes('app.')) score += 10;
+    if (path.includes('config') || path.includes('settings')) score += 8;
+    if (path.includes('router') || path.includes('routes')) score += 8;
+    if (path.includes('api') || path.includes('service') || path.includes('controller')) score += 7;
+    if (path.includes('model') || path.includes('schema') || path.includes('entity')) score += 7;
+    if (path.includes('middleware') || path.includes('interceptor')) score += 6;
+    if (path.includes('utils') || path.includes('helpers') || path.includes('lib')) score += 5;
+    if (path.includes('component') && (path.endsWith('.tsx') || path.endsWith('.jsx'))) score += 5;
+    
+    // Root level files are often important
+    if (file.path.split('/').length === 1) score += 6;
+    
+    // Source directory files
+    if (path.startsWith('src/') || path.startsWith('app/') || path.startsWith('lib/')) score += 4;
+    
+    // Deduct for test/config files
+    if (path.includes('test') || path.includes('spec') || path.includes('.test.') || path.includes('.spec.')) score -= 5;
+    if (path.includes('mock') || path.includes('fixture')) score -= 3;
+    if (path.includes('dist/') || path.includes('build/') || path.includes('.min.')) score -= 10;
+    
+    return score;
+  };
+  
+  const sortedFiles = [...files]
     .filter(f => interestingExtensions.some(ext => f.path.endsWith(ext)))
     .filter(f => !f.path.includes('package-lock') && !f.path.includes('yarn.lock') && !f.path.includes('node_modules'))
-    .slice(0, 15);
+    .map(f => ({ file: f, score: scoreFile(f) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20) // Get top 20 most significant files
+    .map(item => item.file);
 
+  const candidates = sortedFiles;
   const updatedFiles = [...files];
 
   await Promise.all(candidates.map(async (file) => {
