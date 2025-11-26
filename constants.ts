@@ -2,8 +2,8 @@ export const APP_NAME = "IIC reviews";
 
 // Authentication Credentials (In a real app, these would not be client-side constant exports,
 // but standard env vars or backend-checked. Following user spec for stateless in-memory check.)
-export const ADMIN_USER = "admin";
-export const ADMIN_PASS = "iicbicepadminpassword";
+export const ADMIN_USER = "";
+export const ADMIN_PASS = "";
 
 // HSL Colors as strings for inline styles where Tailwind classes aren't enough
 export const COLORS = {
