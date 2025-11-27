@@ -1,14 +1,18 @@
 
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Search, Github, GitBranch, GitCommit, GitPullRequest, Folder, File, ChevronRight, ChevronDown, Moon, Sun, BrainCircuit, Bot, Layout, FileSearch, Settings, Key, AlertCircle, LogOut, Users, Book, X, ExternalLink, Activity, Layers, ShieldCheck, Zap, RefreshCw, Trash2, Plus, Lock } from 'lucide-react';
+import { Search, Github, GitBranch, GitCommit, GitPullRequest, Folder, File, ChevronRight, ChevronDown, Moon, Sun, BrainCircuit, Bot, Layout, FileSearch, Settings, Key, AlertCircle, LogOut, Users, Book, X, ExternalLink, Activity, Layers, ShieldCheck, Zap, RefreshCw, Trash2, Plus, Lock, Loader2, History, Clock, ChevronLeft } from 'lucide-react';
+import { ReviewHistoryService, SavedReview } from '../services/reviewHistoryService';
 import { Button } from './Button';
 import { Sidebar } from './Sidebar';
-import { RepoInfo, Commit, FileNode, Branch, Contributor, PullRequest, ViewState, DetailView, AIAnalysisResult, ManagedKey } from '../types';
+import { RepoInfo, Commit, FileNode, Branch, Contributor, PullRequest, ViewState, DetailView, AIAnalysisResult, ManagedKey, RepoEntry } from '../types';
 import { parseGithubUrl, fetchRepoDetails } from '../services/githubService';
 import { generateReviewStream } from '../services/geminiService';
+import { generateReviewStreamOllama } from '../services/ollamaService';
 import { KeyManager } from '../services/keyManager';
 import { APP_NAME } from '../constants';
+import { loadRepoCSV } from '../utils/csvLoader';
+import { normalizeGitHubUrl } from '../utils/urlHelpers';
 
 // --- Components ---
 
@@ -156,11 +160,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [usageMetadata, setUsageMetadata] = useState<{input: number, output: number, total: number} | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
 
+  // Review History States
+  const [showReviewHistory, setShowReviewHistory] = useState(false);
+  const [reviewHistory, setReviewHistory] = useState<SavedReview[]>([]);
+  const [loadedReviewId, setLoadedReviewId] = useState<string | null>(null);
+
   // Settings State
   const [managedKeys, setManagedKeys] = useState<ManagedKey[]>([]);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyType, setNewKeyType] = useState<'github' | 'gemini'>('github');
   const [newKeyToken, setNewKeyToken] = useState('');
+  const [llmProvider, setLlmProvider] = useState<'gemini' | 'ollama'>('gemini');
+
+  // CSV/Dropdown States
+  const [repoEntries, setRepoEntries] = useState<RepoEntry[]>([]);
+  const [selectedTeam, setSelectedTeam] = useState<string>('');
+  const [inputMode, setInputMode] = useState<'manual' | 'dropdown'>('manual');
 
   // Modal States
   const [showBranchesModal, setShowBranchesModal] = useState(false);
@@ -177,6 +192,40 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   useEffect(() => {
     setManagedKeys(KeyManager.getKeys());
   }, [showSettings]);
+
+  // Load CSV on mount
+  useEffect(() => {
+    const loadRepos = async () => {
+      const entries = await loadRepoCSV();
+      if (entries.length > 0) {
+        setRepoEntries(entries);
+        setInputMode('dropdown');
+      }
+    };
+    loadRepos();
+  }, []);
+
+  // Load review history on mount and when showReviewHistory changes
+  useEffect(() => {
+    setReviewHistory(ReviewHistoryService.getAll());
+  }, [showReviewHistory]);
+
+  // Save review when AI analysis completes (when isReviewing goes from true to false and we have content)
+  const previousIsReviewing = React.useRef(isReviewing);
+  useEffect(() => {
+    if (previousIsReviewing.current && !isReviewing && reviewMarkdown && repoInfo && aiAnalysis && !loadedReviewId) {
+      // Analysis just completed, save the review
+      ReviewHistoryService.save(
+        repoInfo,
+        reviewMarkdown,
+        aiAnalysis,
+        commits.length,
+        pullRequests.length
+      );
+      setReviewHistory(ReviewHistoryService.getAll());
+    }
+    previousIsReviewing.current = isReviewing;
+  }, [isReviewing, reviewMarkdown, repoInfo, aiAnalysis, commits.length, pullRequests.length, loadedReviewId]);
 
   const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
@@ -197,9 +246,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
 
   const handleFetch = async (e: React.FormEvent) => {
     e.preventDefault();
-    const parsed = parseGithubUrl(url);
+    
+    // Determine which URL to use
+    let repoUrl = url;
+    if (inputMode === 'dropdown' && selectedTeam) {
+      const entry = repoEntries.find(e => e.team_name === selectedTeam);
+      if (entry) {
+        repoUrl = entry.repo_link;
+      }
+    }
+
+    // Normalize the URL
+    const normalizedUrl = normalizeGitHubUrl(repoUrl);
+    if (!normalizedUrl) {
+      setError('Invalid GitHub URL format. Supported formats: https://github.com/owner/repo, git@github.com:owner/repo.git, or github.com/owner/repo');
+      return;
+    }
+
+    const parsed = parseGithubUrl(normalizedUrl);
     if (!parsed) {
-      setError('Invalid GitHub URL. Must be https://github.com/owner/repo');
+      setError('Could not parse GitHub repository URL');
       return;
     }
 
@@ -221,6 +287,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
       setReadme(data.readme);
       setLanguages(data.languages);
       setViewState(ViewState.REPO_LOADED);
+      
+      // Show info message if repository is empty (don't block the UI)
+      if (data.files.length === 0 && data.commits.length === 0) {
+        console.info('ℹ️ Repository appears to be empty or newly created');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch repository data');
       setViewState(ViewState.IDLE);
@@ -234,11 +305,56 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setReviewMarkdown('');
     setUsageMetadata(null);
     setViewState(ViewState.IDLE);
+    setLoadedReviewId(null);
   }
+
+  // Load a saved review from history
+  const handleLoadReview = async (savedReview: SavedReview) => {
+    // Set loaded review ID to prevent re-saving
+    setLoadedReviewId(savedReview.id);
+    
+    // Restore the review data
+    setReviewMarkdown(savedReview.reviewMarkdown);
+    setAiAnalysis(savedReview.aiAnalysis);
+    setUsageMetadata(savedReview.aiAnalysis?.tokenUsage || null);
+    
+    // Fetch fresh metadata from GitHub API
+    const parsed = parseGithubUrl(savedReview.repoUrl);
+    if (parsed) {
+      setViewState(ViewState.LOADING_REPO);
+      setError(null);
+      try {
+        const data = await fetchRepoDetails(parsed.owner, parsed.repo);
+        setRepoInfo(data.info);
+        setCommits(data.commits);
+        setPullRequests(data.pullRequests);
+        setFiles(data.files);
+        setBranches(data.branches);
+        setContributors(data.contributors);
+        setReadme(data.readme);
+        setLanguages(data.languages);
+        setViewState(ViewState.REPO_LOADED);
+        setShowReviewHistory(false);
+        setIsSidebarOpen(true); // Open sidebar to show the review
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to fetch repository data');
+        setViewState(ViewState.IDLE);
+      }
+    }
+  };
+
+  // Delete a saved review
+  const handleDeleteReview = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    ReviewHistoryService.delete(id);
+    setReviewHistory(ReviewHistoryService.getAll());
+  };
 
   const handleReview = async () => {
     if (!repoInfo) return;
     
+    // Clear loadedReviewId to allow saving this new review
+    setLoadedReviewId(null);
     setIsSidebarOpen(true);
     setReviewMarkdown('');
     setIsReviewing(true);
@@ -256,7 +372,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     };
 
     try {
-      const stream = generateReviewStream(requestData);
+      // Choose stream based on provider
+      const stream = llmProvider === 'ollama' 
+        ? generateReviewStreamOllama(requestData)
+        : generateReviewStream(requestData);
 
       for await (const chunk of stream) {
         if (chunk.type === 'text') {
@@ -304,9 +423,59 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
               </div>
 
               <div className="overflow-y-auto flex-1 custom-scrollbar pr-2">
+                  
+                  {/* LLM Provider Selection */}
                   <div className="bg-[hsl(var(--bg))] border border-[hsl(var(--surface-2))] rounded-lg p-4 mb-6">
-                      <h4 className="text-sm font-bold text-[hsl(var(--text-main))] mb-3 flex items-center gap-2"><Plus size={16}/> Add New Key</h4>
-                      <form onSubmit={handleAddKey} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+                      <h4 className="text-sm font-bold text-[hsl(var(--text-main))] mb-3 flex items-center gap-2"><Bot size={16}/> LLM Provider</h4>
+                      <div className="flex gap-3">
+                          <button
+                              onClick={() => setLlmProvider('gemini')}
+                              className={`flex-1 p-3 rounded-lg border-2 transition-all ${
+                                  llmProvider === 'gemini'
+                                      ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10'
+                                      : 'border-[hsl(var(--surface-2))] hover:border-[hsl(var(--surface-3))]'
+                              }`}
+                          >
+                              <BrainCircuit size={20} className="mx-auto mb-2" />
+                              <div className="font-bold text-sm">Google Gemini</div>
+                              <div className="text-xs text-[hsl(var(--text-dim))]">Cloud API</div>
+                          </button>
+                          <button
+                              onClick={() => setLlmProvider('ollama')}
+                              className={`flex-1 p-3 rounded-lg border-2 transition-all ${
+                                  llmProvider === 'ollama'
+                                      ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10'
+                                      : 'border-[hsl(var(--surface-2))] hover:border-[hsl(var(--surface-3))]'
+                              }`}
+                          >
+                              <Activity size={20} className="mx-auto mb-2" />
+                              <div className="font-bold text-sm">Ollama (Local)</div>
+                              <div className="text-xs text-[hsl(var(--text-dim))]">Windows Native</div>
+                          </button>
+                      </div>
+                      {llmProvider === 'ollama' && (
+                          <div className="mt-3 text-xs bg-blue-900/10 border border-blue-900/30 p-3 rounded space-y-2">
+                              <div className="font-bold text-blue-400 flex items-center gap-1">
+                                  <Activity size={12} /> Windows Setup Required
+                              </div>
+                              <div className="text-[hsl(var(--text-dim))] space-y-1">
+                                  <div>1. Install Ollama: <a href="https://ollama.com/download/windows" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">Download for Windows</a></div>
+                                  <div>2. Verify running: <code className="text-[hsl(var(--primary))] font-mono text-[11px] bg-[hsl(var(--surface-2))] px-1 py-0.5 rounded">ollama list</code> in PowerShell</div>
+                                  <div>3. Pull model: <code className="text-[hsl(var(--primary))] font-mono text-[11px] bg-[hsl(var(--surface-2))] px-1 py-0.5 rounded">ollama pull qwen2.5-coder:7b</code></div>
+                                  <div className="pt-1 border-t border-blue-900/20 text-[10px]">
+                                      Ollama runs in the background on <code className="text-[hsl(var(--primary))]">localhost:11434</code>
+                                  </div>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+
+                  {/* API Keys Section - Only show for Gemini */}
+                  {llmProvider === 'gemini' && (
+                      <>
+                          <div className="bg-[hsl(var(--bg))] border border-[hsl(var(--surface-2))] rounded-lg p-4 mb-6">
+                              <h4 className="text-sm font-bold text-[hsl(var(--text-main))] mb-3 flex items-center gap-2"><Plus size={16}/> Add New Key</h4>
+                              <form onSubmit={handleAddKey} className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
                           <div className="space-y-1 md:col-span-1">
                               <label className="text-xs text-[hsl(var(--text-dim))]">Key Name</label>
                               <input 
@@ -376,6 +545,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                           </div>
                       ))}
                   </div>
+                      </>
+                  )}
               </div>
               <div className="mt-6 pt-4 border-t border-[hsl(var(--surface-2))] text-xs text-[hsl(var(--text-dim))] flex items-start gap-2">
                   <ShieldCheck size={14} className="text-green-500 shrink-0 mt-0.5" />
@@ -494,12 +665,124 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         </div>
         
         <div className="flex items-center gap-4">
+          <button 
+            onClick={() => setShowReviewHistory(!showReviewHistory)} 
+            className={`p-2 rounded-lg transition-colors flex items-center gap-1.5 ${
+              showReviewHistory 
+                ? 'bg-[hsl(var(--primary))] text-white' 
+                : 'text-[hsl(var(--text-dim))] hover:bg-[hsl(var(--surface-1))]'
+            }`}
+            title="Review History"
+          >
+            <History size={18} />
+            {reviewHistory.length > 0 && (
+              <span className={`text-xs font-bold ${showReviewHistory ? 'text-white' : 'text-[hsl(var(--primary))]'}`}>
+                {reviewHistory.length}
+              </span>
+            )}
+          </button>
           <button onClick={() => setShowSettings(!showSettings)} className="p-2 rounded-lg text-[hsl(var(--text-dim))] hover:bg-[hsl(var(--surface-1))] transition-colors"><Settings size={18} /></button>
           <button onClick={toggleTheme} className="p-2 rounded-lg text-[hsl(var(--text-dim))] hover:bg-[hsl(var(--surface-1))] transition-colors">{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
           <div className="h-4 w-px bg-[hsl(var(--surface-2))]" />
           <button onClick={onLogout} className="text-xs text-[hsl(var(--text-dim))] hover:text-red-400 flex items-center gap-1 transition-colors font-medium"><LogOut size={14} /> Sign Out</button>
         </div>
       </header>
+
+      {/* Review History Panel */}
+      <div 
+        className={`fixed inset-y-0 left-0 w-[350px] bg-[hsl(var(--surface-1))] shadow-[10px_0_30px_rgba(0,0,0,var(--shadow-strength))] transform transition-transform duration-300 ease-in-out z-40 flex flex-col border-r border-[hsl(var(--surface-2))] ${
+          showReviewHistory ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="h-16 flex items-center justify-between px-4 border-b border-[hsl(var(--surface-2))] bg-[hsl(var(--surface-1))] shrink-0">
+          <h2 className="font-semibold text-lg text-[hsl(var(--text-main))] flex items-center gap-2">
+            <History size={20} className="text-[hsl(var(--primary))]" />
+            Review History
+          </h2>
+          <button 
+            onClick={() => setShowReviewHistory(false)}
+            className="p-2 text-[hsl(var(--text-dim))] hover:text-[hsl(var(--text-main))] transition-colors rounded-md hover:bg-[hsl(var(--surface-2))]"
+          >
+            <ChevronLeft size={20} />
+          </button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+          {reviewHistory.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-[50vh] text-[hsl(var(--text-dim))] text-center">
+              <History size={48} strokeWidth={1} className="opacity-30 mb-4" />
+              <p className="text-sm">No saved reviews yet</p>
+              <p className="text-xs mt-1 opacity-70">Reviews will appear here after AI analysis</p>
+            </div>
+          ) : (
+            reviewHistory.map(review => (
+              <div 
+                key={review.id} 
+                onClick={() => handleLoadReview(review)}
+                className={`p-3 bg-[hsl(var(--bg))] border rounded-lg cursor-pointer transition-all hover:border-[hsl(var(--primary))] hover:shadow-md group ${
+                  loadedReviewId === review.id 
+                    ? 'border-[hsl(var(--primary))] ring-1 ring-[hsl(var(--primary))]' 
+                    : 'border-[hsl(var(--surface-2))]'
+                }`}
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <div className="font-medium text-[hsl(var(--text-main))] text-sm truncate flex-1 mr-2">
+                    {review.repoFullName}
+                  </div>
+                  <button 
+                    onClick={(e) => handleDeleteReview(review.id, e)}
+                    className="p-1 text-[hsl(var(--text-dim))] hover:text-red-400 hover:bg-red-900/20 rounded opacity-0 group-hover:opacity-100 transition-all"
+                    title="Delete review"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+                
+                <div className="flex items-center gap-2 text-xs text-[hsl(var(--text-dim))] mb-2">
+                  <Clock size={12} />
+                  <span>{new Date(review.savedAt).toLocaleDateString()} {new Date(review.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+                
+                <div className="flex gap-3 text-xs">
+                  <span className="flex items-center gap-1 text-[hsl(var(--text-dim))]">
+                    <GitCommit size={12} /> {review.commitCount} commits
+                  </span>
+                  <span className="flex items-center gap-1 text-[hsl(var(--text-dim))]">
+                    <GitPullRequest size={12} /> {review.prCount} PRs
+                  </span>
+                </div>
+                
+                {review.aiAnalysis?.scores && (
+                  <div className="flex gap-2 mt-2 pt-2 border-t border-[hsl(var(--surface-2))]">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--surface-2))]">
+                      Quality: <span className="text-[hsl(var(--primary))] font-bold">{review.aiAnalysis.scores.quality}</span>
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--surface-2))]">
+                      Security: <span className="text-[hsl(var(--primary))] font-bold">{review.aiAnalysis.scores.security}</span>
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+        
+        {reviewHistory.length > 0 && (
+          <div className="p-4 border-t border-[hsl(var(--surface-2))] shrink-0">
+            <button 
+              onClick={() => {
+                if (confirm('Are you sure you want to clear all review history?')) {
+                  ReviewHistoryService.clearAll();
+                  setReviewHistory([]);
+                }
+              }}
+              className="w-full text-xs text-red-400 hover:text-red-300 hover:bg-red-900/20 p-2 rounded transition-colors flex items-center justify-center gap-1"
+            >
+              <Trash2 size={12} /> Clear All History
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto p-6 md:p-8 scroll-smooth">
@@ -509,20 +792,99 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
           {!repoInfo && (
             <section className="space-y-4 pt-10">
               <h1 className="text-3xl font-bold text-[hsl(var(--text-main))]">Repository Intelligence</h1>
-              <p className="text-[hsl(var(--text-dim))] max-w-2xl">Enter a public GitHub repository URL.</p>
+              <p className="text-[hsl(var(--text-dim))] max-w-2xl">Enter a public GitHub repository URL or select from teams.</p>
               
-              <form onSubmit={handleFetch} className="flex gap-4 max-w-2xl mt-6">
-                <div className="flex-1 relative group">
-                  <Github className="absolute left-4 top-1/2 -translate-y-1/2 text-[hsl(var(--text-dim))] w-5 h-5 group-focus-within:text-[hsl(var(--primary))] transition-colors" />
-                  <input 
-                    type="text" 
-                    placeholder="https://github.com/facebook/react"
-                    value={url}
-                    onChange={e => setUrl(e.target.value)}
-                    className="w-full bg-[hsl(var(--surface-1))] border border-[hsl(var(--surface-2))] rounded-lg py-3 pl-12 pr-4 text-[hsl(var(--text-main))] focus:outline-none focus:border-[hsl(var(--primary))] transition-all"
-                  />
+              {/* Input Mode Toggle */}
+              {repoEntries.length > 0 && (
+                <div className="flex gap-2 max-w-2xl">
+                  <button
+                    onClick={() => setInputMode('manual')}
+                    className={`px-4 py-2 rounded-lg transition-all text-sm font-medium ${
+                      inputMode === 'manual'
+                        ? 'bg-[hsl(var(--primary))] text-white shadow-lg'
+                        : 'bg-[hsl(var(--surface-1))] border border-[hsl(var(--surface-2))] text-[hsl(var(--text-dim))] hover:border-[hsl(var(--primary))]'
+                    }`}
+                  >
+                    <Github size={14} className="inline mr-1.5" />
+                    Manual URL Entry
+                  </button>
+                  <button
+                    onClick={() => setInputMode('dropdown')}
+                    className={`px-4 py-2 rounded-lg transition-all text-sm font-medium ${
+                      inputMode === 'dropdown'
+                        ? 'bg-[hsl(var(--primary))] text-white shadow-lg'
+                        : 'bg-[hsl(var(--surface-1))] border border-[hsl(var(--surface-2))] text-[hsl(var(--text-dim))] hover:border-[hsl(var(--primary))]'
+                    }`}
+                  >
+                    <Users size={14} className="inline mr-1.5" />
+                    Select from Teams ({repoEntries.length})
+                  </button>
                 </div>
-                <Button type="submit" isLoading={viewState === ViewState.LOADING_REPO}>Fetch Data</Button>
+              )}
+
+              <form onSubmit={handleFetch} className="flex flex-col gap-4 max-w-2xl mt-6">
+                {inputMode === 'manual' ? (
+                  <div className="flex-1 relative group">
+                    <Github className="absolute left-4 top-1/2 -translate-y-1/2 text-[hsl(var(--text-dim))] w-5 h-5 group-focus-within:text-[hsl(var(--primary))] transition-colors" />
+                    <input 
+                      type="text" 
+                      placeholder="https://github.com/owner/repo, git@github.com:owner/repo.git, or github.com/owner/repo"
+                      value={url}
+                      onChange={e => setUrl(e.target.value)}
+                      className="w-full bg-[hsl(var(--surface-1))] border border-[hsl(var(--surface-2))] rounded-lg py-3 pl-12 pr-4 text-[hsl(var(--text-main))] focus:outline-none focus:border-[hsl(var(--primary))] transition-all"
+                      disabled={viewState === ViewState.LOADING_REPO}
+                    />
+                    <p className="text-xs text-[hsl(var(--text-dim))] mt-2 ml-1">
+                      Supports: https://github.com/owner/repo, github.com/owner/repo, git@github.com:owner/repo.git, or URLs ending with .git
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex-1 relative group">
+                    <Users className="absolute left-4 top-1/2 -translate-y-1/2 text-[hsl(var(--text-dim))] w-5 h-5 group-focus-within:text-[hsl(var(--primary))] transition-colors" />
+                    <select
+                      value={selectedTeam}
+                      onChange={e => setSelectedTeam(e.target.value)}
+                      className="w-full bg-[hsl(var(--surface-1))] border border-[hsl(var(--surface-2))] rounded-lg py-3 pl-12 pr-4 text-[hsl(var(--text-main))] focus:outline-none focus:border-[hsl(var(--primary))] transition-all appearance-none cursor-pointer"
+                      disabled={viewState === ViewState.LOADING_REPO}
+                    >
+                      <option value="">-- Select a Team --</option>
+                      {repoEntries.map((entry, idx) => (
+                        <option key={idx} value={entry.team_name}>
+                          {entry.team_name}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedTeam && (
+                      <p className="text-xs text-[hsl(var(--text-dim))] mt-2 ml-1 flex items-center gap-1.5">
+                        <ExternalLink size={12} />
+                        Repository: <span className="text-[hsl(var(--primary))] font-mono">{repoEntries.find(e => e.team_name === selectedTeam)?.repo_link}</span>
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <Button 
+                  type="submit" 
+                  isLoading={viewState === ViewState.LOADING_REPO}
+                  disabled={
+                    viewState === ViewState.LOADING_REPO || 
+                    (inputMode === 'manual' && !url.trim()) ||
+                    (inputMode === 'dropdown' && !selectedTeam)
+                  }
+                  className="w-full"
+                >
+                  {viewState === ViewState.LOADING_REPO ? (
+                    <>
+                      <Loader2 className="animate-spin mr-2" size={18}/>
+                      Analyzing Repository...
+                    </>
+                  ) : (
+                    <>
+                      <Search size={18} className="mr-2" />
+                      Fetch Repository Data
+                    </>
+                  )}
+                </Button>
               </form>
 
               {error && (
@@ -782,7 +1144,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
                             })()}
                         </div>
                      ) : (
-                         <div className="text-center text-[hsl(var(--text-dim))] mt-10">No files loaded.</div>
+                         <div className="text-center text-[hsl(var(--text-dim))] mt-10">
+                           <p className="text-lg mb-2">📁 No files found</p>
+                           <p className="text-sm">This repository appears to be empty or contains no accessible files.</p>
+                         </div>
                      )}
                   </div>
                </div>
