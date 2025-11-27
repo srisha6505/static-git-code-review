@@ -64,6 +64,10 @@ Before answering, you must **think and plan** your response.
    * Use code snippets to infer **code quality** (readability, modularity, abstraction, error handling, testing, consistency).
    * Keep Markdown output **concise and skimmable**: headings + short paragraphs + bullet lists.
 
+5. **Scoring Guidance**
+
+  * Do not be generous with high scores. Use the full 0-100 range realistically.
+  * Base scores on **evidence from the inputs only**. If data is missing, choose a conservative score and note the uncertainty.
 ---
 
 ## 4. Detailed Task Instructions & Output Format
@@ -139,6 +143,7 @@ Immediately after the JSON (with no extra text in between), output a Markdown re
 
 ## Code Quality Review (Score: <quality>/100)
 - 3–6 bullet points describing patterns from the code snippets:
+  - Presence of readme, and clean file structure
   - Readability & naming conventions
   - Modularity and separation of concerns
   - Error handling and defensive coding
