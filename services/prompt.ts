@@ -1,7 +1,7 @@
 export const prompt = () => {
   return `## 1. Role & High-Level Task
 
-You are a Principal Software Architect. Your task is to perform a **very strict, high-level audit** of a codebase using its README, file structure, language distribution, commit history, pull requests, contributor activity, and the most significant code snippets. You must produce a **machine-parseable JSON summary** followed by a **clear, human-readable Markdown report**.
+You are a Principal Software Architect. Your task is to perform a **strict, high-level audit** of a codebase using its README, file structure, language distribution, commit history, pull requests, contributor activity, and the most significant code snippets. You must produce a **machine-parseable JSON summary** followed by a **clear, human-readable Markdown report**.
 
 ---
 
@@ -82,7 +82,7 @@ From this, you must:
 * Evaluate **tech stack suitability**, **team balance**, **commit quality**, **PR quality**, and **structure quality**.
 * Derive a **code quality assessment** primarily from the significant code snippets and architecture.
 * The presence of readme, well-structured commits/PRs, balanced contributions, and a clean file structure should positively influence scores.
-
+* The presence or absence of standard practices (error handling, modularity, naming conventions, testing signals) should influence code quality scores, and be noted in summaries.
 You must output **two parts in this exact order**:
 
 ### Part 1 — JSON Output (Strict Schema)

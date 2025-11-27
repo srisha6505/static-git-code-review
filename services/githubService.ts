@@ -1,6 +1,7 @@
 
 import { RepoInfo, Commit, FileNode, Branch, Contributor, PullRequest } from '../types';
 import { KeyManager } from './keyManager';
+import { normalizeGitHubUrl, parseGitHubUrl as parseGitHubUrlHelper } from '../utils/urlHelpers';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -39,56 +40,118 @@ const fetchWithRetry = async (url: string, options: RequestInit = {}, attempt = 
 };
 
 export const parseGithubUrl = (url: string): { owner: string; repo: string } | null => {
-  try {
-    const urlObj = new URL(url);
-    if (urlObj.hostname !== 'github.com') return null;
-    const parts = urlObj.pathname.split('/').filter(Boolean);
-    if (parts.length < 2) return null;
-    return { owner: parts[0], repo: parts[1] };
-  } catch (e) {
-    return null;
-  }
+  return parseGitHubUrlHelper(url);
 };
 
 // Helper to fetch architecturally significant file content
 const fetchFileContents = async (files: FileNode[]): Promise<FileNode[]> => {
-  const interestingExtensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.css', '.html', '.json', '.md'];
+  const interestingExtensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.kt', '.swift', '.c', '.cpp', '.h', '.hpp', '.cs', '.rb', '.php', '.vue', '.svelte', '.css', '.scss', '.html', '.json', '.yaml', '.yml', '.md', '.sql', '.graphql'];
   
-  // Score files based on architectural significance
+  // Score files based on architectural significance with flexible pattern matching
   const scoreFile = (file: FileNode): number => {
     let score = 0;
     const path = file.path.toLowerCase();
+    const fileName = file.path.split('/').pop()?.toLowerCase() || '';
+    const pathParts = path.split('/');
+    const depth = pathParts.length;
     
-    // High priority: Entry points, configs, main architecture files
-    if (path.includes('main.') || path.includes('index.') || path.includes('app.')) score += 10;
-    if (path.includes('config') || path.includes('settings')) score += 8;
-    if (path.includes('router') || path.includes('routes')) score += 8;
-    if (path.includes('api') || path.includes('service') || path.includes('controller')) score += 7;
-    if (path.includes('model') || path.includes('schema') || path.includes('entity')) score += 7;
-    if (path.includes('middleware') || path.includes('interceptor')) score += 6;
-    if (path.includes('utils') || path.includes('helpers') || path.includes('lib')) score += 5;
-    if (path.includes('component') && (path.endsWith('.tsx') || path.endsWith('.jsx'))) score += 5;
+    // === HIGH PRIORITY: Entry points and bootstrapping ===
+    // Main application entry points (various naming conventions)
+    if (/^(main|index|app|server|start|boot|init|program|entry)\./.test(fileName)) score += 10;
+    if (/^__main__|__init__|bootstrap/.test(fileName)) score += 10;
     
-    // Root level files are often important
-    if (file.path.split('/').length === 1) score += 6;
+    // === CONFIGURATION & SETUP ===
+    // Config files at any level
+    if (/config|settings|environment|constants|\.config\.|\.env/.test(path)) score += 8;
+    if (fileName === 'package.json' || fileName === 'tsconfig.json' || fileName === 'webpack.config.js' || fileName === 'vite.config.ts') score += 9;
+    if (fileName.endsWith('.config.js') || fileName.endsWith('.config.ts') || fileName.endsWith('rc.js')) score += 8;
     
-    // Source directory files
-    if (path.startsWith('src/') || path.startsWith('app/') || path.startsWith('lib/')) score += 4;
+    // === ROUTING & API LAYERS ===
+    // Flexible routing patterns
+    if (/route|router|routing|endpoint/.test(path)) score += 8;
+    if (/api|rest|graphql|rpc|grpc/.test(path)) score += 7;
+    if (/controller|handler|resolver/.test(path)) score += 7;
     
-    // Deduct for test/config files
-    if (path.includes('test') || path.includes('spec') || path.includes('.test.') || path.includes('.spec.')) score -= 5;
-    if (path.includes('mock') || path.includes('fixture')) score -= 3;
-    if (path.includes('dist/') || path.includes('build/') || path.includes('.min.')) score -= 10;
+    // === DATA & BUSINESS LOGIC ===
+    // Models, schemas, database related
+    if (/model|schema|entity|domain|dto|dao|repository|orm/.test(path)) score += 7;
+    if (/database|db|migration|seed/.test(path)) score += 6;
+    
+    // Services and core business logic
+    if (/service|business|logic|manager|provider|use-?case|interactor/.test(path)) score += 7;
+    
+    // === MIDDLEWARE & CROSS-CUTTING ===
+    if (/middleware|interceptor|filter|guard|decorator|plugin/.test(path)) score += 6;
+    if (/auth|security|permission|role|access/.test(path)) score += 6;
+    
+    // === UTILITIES & SHARED CODE ===
+    if (/util|helper|common|shared|lib|core|tool/.test(path)) score += 5;
+    if (/hook|composable/.test(path)) score += 5; // React/Vue patterns
+    
+    // === UI COMPONENTS ===
+    // Framework-specific component patterns
+    if ((path.endsWith('.tsx') || path.endsWith('.jsx') || path.endsWith('.vue') || path.endsWith('.svelte')) && 
+        /component|widget|view|page|screen|layout|template/.test(path)) score += 5;
+    
+    // === ROOT LEVEL BONUS ===
+    // Files in root or immediate subdirectories are often important
+    if (depth === 1) score += 7; // Root level
+    if (depth === 2) score += 4; // One level deep
+    
+    // === SOURCE DIRECTORY DETECTION ===
+    // Common source directories (flexible patterns)
+    if (/^(src|app|lib|core|source|packages|modules)\//.test(path)) score += 4;
+    
+    // Special directories
+    if (path.startsWith('backend/') || path.startsWith('frontend/') || path.startsWith('server/') || path.startsWith('client/')) score += 3;
+    
+    // === DOCUMENTATION (README files are valuable) ===
+    if (fileName === 'readme.md' || fileName === 'readme') score += 6;
+    if (path.includes('docs/') && fileName.endsWith('.md')) score += 3;
+    
+    // === NEGATIVE SCORING: Things to avoid ===
+    // Test files (but don't completely exclude - they show code patterns)
+    if (/test|spec|__tests__|\.test\.|\.spec\.|testing/.test(path)) score -= 5;
+    if (/mock|fixture|stub|fake/.test(path)) score -= 4;
+    
+    // Build artifacts and generated code
+    if (/dist\/|build\/|out\/|target\/|\.min\.|\.bundle\.|compiled|generated/.test(path)) score -= 10;
+    if (/node_modules|vendor|third[_-]?party|external/.test(path)) score -= 15;
+    
+    // Lock files and caches
+    if (/lock\.json|lock\.yaml|-lock\.|\.lock$|cache|\.cache/.test(path)) score -= 10;
+    
+    // Very large files are often generated
+    if (file.size && file.size > 100000) score -= 3; // Penalize files > 100KB
+    
+    // === LANGUAGE-SPECIFIC PATTERNS ===
+    // Python
+    if (path.endsWith('.py') && /__init__|__main__|manage\.py|wsgi|asgi/.test(fileName)) score += 5;
+    
+    // Java/Kotlin
+    if (/\.java$|\.kt$/.test(path) && /Application|Main|Config|Controller|Service|Repository/.test(fileName)) score += 4;
+    
+    // Go
+    if (fileName === 'main.go' || /handler|router|middleware/.test(path) && path.endsWith('.go')) score += 4;
+    
+    // Rust
+    if (fileName === 'main.rs' || fileName === 'lib.rs' || fileName === 'mod.rs') score += 5;
     
     return score;
   };
   
   const sortedFiles = [...files]
     .filter(f => interestingExtensions.some(ext => f.path.endsWith(ext)))
-    .filter(f => !f.path.includes('package-lock') && !f.path.includes('yarn.lock') && !f.path.includes('node_modules'))
     .map(f => ({ file: f, score: scoreFile(f) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 20) // Get top 20 most significant files
+    .sort((a, b) => {
+      // Sort by score first, then by path depth (shallower first), then alphabetically
+      if (b.score !== a.score) return b.score - a.score;
+      const depthA = a.file.path.split('/').length;
+      const depthB = b.file.path.split('/').length;
+      if (depthA !== depthB) return depthA - depthB;
+      return a.file.path.localeCompare(b.file.path);
+    })
+    .slice(0, 20) // Get top 20 most significant files (reduced from 25)
     .map(item => item.file);
 
   const candidates = sortedFiles;
@@ -165,22 +228,25 @@ export const fetchRepoDetails = async (owner: string, repo: string): Promise<{
   if (!infoRes.ok) throw new Error('Repository not found or private');
   const info: RepoInfo = await infoRes.json();
 
-  // Helper for parallel fetching
+  // Check if repository is empty (no default branch)
+  const isEmpty = !info.default_branch;
+  
+  // Helper for parallel fetching - skip tree/commits if repo is empty
   const [commitsRes, pullsRes, branchesRes, contributorsRes, treeRes, readmeRes, langsRes] = await Promise.all([
-    fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?per_page=30`), 
+    isEmpty ? Promise.resolve(null) : fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?per_page=30`), 
     fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/pulls?state=all&per_page=10`),
     fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/branches?per_page=50`),
-    fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/contributors?per_page=50`),
-    fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees/${info.default_branch}?recursive=1`),
+    isEmpty ? Promise.resolve(null) : fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/contributors?per_page=50`),
+    isEmpty ? Promise.resolve(null) : fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/git/trees/${info.default_branch}?recursive=1`),
     fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/readme`),
     fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/languages`)
   ]);
 
-  const rawCommits: Commit[] = commitsRes.ok ? await commitsRes.json() : [];
+  const rawCommits: Commit[] = commitsRes?.ok ? await commitsRes.json() : [];
   const pullRequests: PullRequest[] = pullsRes.ok ? await pullsRes.json() : [];
   const branchesData = branchesRes.ok ? await branchesRes.json() : [];
-  const contributors: Contributor[] = contributorsRes.ok ? await contributorsRes.json() : [];
-  const treeData = treeRes.ok ? await treeRes.json() : {};
+  const contributors: Contributor[] = contributorsRes?.ok ? await contributorsRes.json() : [];
+  const treeData = treeRes?.ok ? await treeRes.json() : {};
   const languages = langsRes.ok ? await langsRes.json() : {};
   
   const commits = await enrichCommitsWithStats(rawCommits);
