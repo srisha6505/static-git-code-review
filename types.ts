@@ -131,3 +131,8 @@ export enum DetailView {
   NONE = 'NONE',
   README = 'README'
 }
+
+export interface RepoEntry {
+  team_name: string;
+  repo_link: string;
+}
