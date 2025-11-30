@@ -10,3 +10,4 @@ export { ContributorList } from './ContributorList';
 export { LanguageBar } from './LanguageBar';
 export { PullRequestList } from './PullRequestList';
 export { RepoHeader } from './RepoHeader';
+export { RepoSectionCards } from './RepoSectionCards';
