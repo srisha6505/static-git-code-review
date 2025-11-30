@@ -20,6 +20,9 @@ interface FileTreeItemProps {
   depth: number;
 }
 
+/** Auto-expand depth for file tree folders */
+const AUTO_EXPAND_DEPTH = 2;
+
 /**
  * Recursive tree item component for rendering file/folder nodes.
  * Handles expand/collapse for folders and links for files.
@@ -29,7 +32,7 @@ interface FileTreeItemProps {
  * @param props.depth - Current nesting depth for indentation
  */
 const FileTreeItem: React.FC<FileTreeItemProps> = ({ name, item, depth }) => {
-  const [isOpen, setIsOpen] = useState(depth < 2); // Auto expand top levels
+  const [isOpen, setIsOpen] = useState(depth < AUTO_EXPAND_DEPTH);
   const isFolder = item.children && Object.keys(item.children).length > 0;
   const paddingLeft = `${depth * 1.5}rem`;
 

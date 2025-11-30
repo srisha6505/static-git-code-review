@@ -32,6 +32,12 @@ export interface RepoDetailsResult {
   languages: Record<string, number>;
 }
 
+/** File extensions to fetch content for during analysis */
+const INTERESTING_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.css', '.html', '.json', '.md'];
+
+/** Patterns to exclude from file content fetching */
+const EXCLUDED_FILE_PATTERNS = ['package-lock', 'yarn.lock', 'node_modules'];
+
 /**
  * Fetches file contents for selected important files.
  * Prioritizes src/ directory and root-level config files.
@@ -41,8 +47,6 @@ export interface RepoDetailsResult {
  * @internal
  */
 const fetchFileContents = async (files: FileNode[]): Promise<FileNode[]> => {
-  const interestingExtensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.css', '.html', '.json', '.md'];
-  
   const sortedFiles = [...files].sort((a, b) => {
     const aScore = (a.path.startsWith('src/') ? 2 : 0) + (a.path.split('/').length === 1 ? 1 : 0);
     const bScore = (b.path.startsWith('src/') ? 2 : 0) + (b.path.split('/').length === 1 ? 1 : 0);
@@ -50,8 +54,8 @@ const fetchFileContents = async (files: FileNode[]): Promise<FileNode[]> => {
   });
 
   const candidates = sortedFiles
-    .filter(f => interestingExtensions.some(ext => f.path.endsWith(ext)))
-    .filter(f => !f.path.includes('package-lock') && !f.path.includes('yarn.lock') && !f.path.includes('node_modules'))
+    .filter(f => INTERESTING_EXTENSIONS.some(ext => f.path.endsWith(ext)))
+    .filter(f => !EXCLUDED_FILE_PATTERNS.some(pattern => f.path.includes(pattern)))
     .slice(0, 15);
 
   const updatedFiles = [...files];
