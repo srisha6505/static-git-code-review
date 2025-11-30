@@ -1,10 +1,38 @@
+/**
+ * Reusable button component with multiple variants.
+ * @module components/ui/Button
+ */
+
 import React from 'react';
 
+/**
+ * Button component props.
+ */
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  /** Visual variant of the button */
   variant?: 'primary' | 'secondary' | 'danger';
+  /** Whether the button is in loading state */
   isLoading?: boolean;
 }
 
+/**
+ * A styled button component with support for multiple variants and loading state.
+ * 
+ * @param props.variant - Visual style variant ('primary' | 'secondary' | 'danger'). Defaults to 'primary'.
+ * @param props.isLoading - When true, shows a loading spinner and disables interaction.
+ * @param props.children - Button content.
+ * @param props.className - Additional CSS classes to apply.
+ * 
+ * @example
+ * <Button variant="primary" onClick={handleSubmit}>
+ *   Submit
+ * </Button>
+ * 
+ * @example
+ * <Button variant="secondary" isLoading={true}>
+ *   Processing...
+ * </Button>
+ */
 export const Button: React.FC<ButtonProps> = ({ 
   children, 
   variant = 'primary', 

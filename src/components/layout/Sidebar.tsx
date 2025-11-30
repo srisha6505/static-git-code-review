@@ -1,19 +1,57 @@
+/**
+ * Review sidebar component for displaying AI-generated reports.
+ * @module components/layout/Sidebar
+ */
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { X, Download, Copy, Check, Loader2, FileCode, GitCommit, BrainCircuit } from 'lucide-react';
-import { Button } from './Button';
-import { AIAnalysisResult } from '../types';
+import { Button } from '../ui/Button';
+import { AIAnalysisResult } from '../../types';
 
+/**
+ * Sidebar component props.
+ */
 interface SidebarProps {
+  /** Whether the sidebar is visible */
   isOpen: boolean;
+  /** Callback when sidebar should close */
   onClose: () => void;
+  /** Markdown content to display */
   markdown: string;
+  /** Whether AI is currently generating content */
   isGenerating: boolean;
+  /** Callback when AI analysis JSON is parsed from the stream */
   onAnalysisComplete: (result: AIAnalysisResult) => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, markdown, isGenerating, onAnalysisComplete }) => {
+/**
+ * Slide-out sidebar for displaying AI code review reports.
+ * Shows progress animation during generation and formatted markdown when complete.
+ * Extracts JSON analysis data from the markdown stream for parent component.
+ * 
+ * @param props.isOpen - Controls sidebar visibility (slides in from right)
+ * @param props.onClose - Called when close button is clicked
+ * @param props.markdown - Raw markdown content (may contain JSON blocks)
+ * @param props.isGenerating - Shows loading animation when true
+ * @param props.onAnalysisComplete - Called with parsed scores when JSON block is found
+ * 
+ * @example
+ * <Sidebar
+ *   isOpen={showSidebar}
+ *   onClose={() => setShowSidebar(false)}
+ *   markdown={reviewContent}
+ *   isGenerating={isLoading}
+ *   onAnalysisComplete={handleAnalysis}
+ * />
+ */
+export const Sidebar: React.FC<SidebarProps> = ({ 
+  isOpen, 
+  onClose, 
+  markdown, 
+  isGenerating, 
+  onAnalysisComplete 
+}) => {
   const [copied, setCopied] = useState(false);
   const [cleanMarkdown, setCleanMarkdown] = useState('');
   const [progressStep, setProgressStep] = useState(0);
@@ -40,16 +78,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, markdown, isG
         
         // We only care about the main analysis result here which contains scores
         if (parsed.scores && parsed.commitSummaries) {
-           if (!localResult) {
-             setLocalResult(parsed);
-             onAnalysisComplete(parsed);
-           }
+          if (!localResult) {
+            setLocalResult(parsed);
+            onAnalysisComplete(parsed);
+          }
         }
         
         // Remove this block from display
         strippedMarkdown = strippedMarkdown.replace(match[0], '');
-      } catch (e) {
-        // incomplete JSON
+      } catch {
+        // incomplete JSON, ignore
       }
     }
     
@@ -67,14 +105,20 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, markdown, isG
       }, 1500); 
       return () => clearInterval(interval);
     }
-  }, [isGenerating]);
+  }, [isGenerating, progressMessages.length]);
 
+  /**
+   * Copies the clean markdown to clipboard.
+   */
   const handleCopy = () => {
     navigator.clipboard.writeText(cleanMarkdown);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
+  /**
+   * Exports the clean markdown as a .md file download.
+   */
   const handleExport = () => {
     const blob = new Blob([cleanMarkdown], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
@@ -130,7 +174,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, markdown, isG
               <div className="absolute inset-0 border-4 border-[hsl(var(--surface-1))] rounded-full"></div>
               <div className="absolute inset-0 border-4 border-[hsl(var(--primary))] rounded-full border-t-transparent animate-spin"></div>
               <div className="absolute inset-0 flex items-center justify-center">
-                 <BrainCircuit className="w-8 h-8 text-[hsl(var(--primary))]" />
+                <BrainCircuit className="w-8 h-8 text-[hsl(var(--primary))]" />
               </div>
             </div>
             
@@ -164,25 +208,25 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, markdown, isG
           <div className="prose prose-sm max-w-none animate-in fade-in duration-500">
             <ReactMarkdown
               components={{
-                code({ node, inline, className, children, ...props }: any) {
+                code({ inline, className, children, ...props }) {
                   return !inline ? (
                     <div className="relative rounded-md overflow-hidden my-6 border border-[hsl(var(--surface-2))] shadow-lg bg-[hsl(var(--surface-1))]">
                       <div className="px-4 py-2 bg-[hsl(var(--surface-2))] text-xs text-[hsl(var(--text-dim))] font-mono flex items-center gap-2">
                         <FileCode size={12} /> Snippet
                       </div>
-                      <code className="block p-4 overflow-x-auto text-sm font-mono text-[hsl(var(--primary))]" {...props}>
+                      <code className={`block p-4 overflow-x-auto text-sm font-mono text-[hsl(var(--primary))] ${className || ''}`} {...props}>
                         {children}
                       </code>
                     </div>
                   ) : (
-                    <code className="bg-[hsl(var(--surface-2))] px-1.5 py-0.5 rounded text-[hsl(var(--primary))] font-mono text-sm border border-[hsl(var(--surface-3))]" {...props}>
+                    <code className={`bg-[hsl(var(--surface-2))] px-1.5 py-0.5 rounded text-[hsl(var(--primary))] font-mono text-sm border border-[hsl(var(--surface-3))] ${className || ''}`} {...props}>
                       {children}
                     </code>
                   );
                 },
                 h1: ({children}) => (
                   <div className="mb-8 pb-4 border-b-2 border-[hsl(var(--surface-2))] mt-8">
-                     <h1 className="text-3xl font-bold text-[hsl(var(--text-main))] tracking-tight">{children}</h1>
+                    <h1 className="text-3xl font-bold text-[hsl(var(--text-main))] tracking-tight">{children}</h1>
                   </div>
                 ),
                 h2: ({children}) => (

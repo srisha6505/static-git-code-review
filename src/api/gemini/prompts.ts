@@ -1,11 +1,18 @@
+/**
+ * Prompt templates for AI code review.
+ * @module api/gemini/prompts
+ */
 
-import { GoogleGenAI } from "@google/genai";
-import { ReviewRequestData } from "../types";
-import { KeyManager } from "./keyManager";
+import { ReviewRequestData } from '../../types';
 
-export const generateReviewStream = async function* (data: ReviewRequestData) {
-  const modelId = "gemini-2.5-flash"; 
-
+/**
+ * Builds the complete prompt for AI code review.
+ * Structures all repository data into a format the AI model can analyze.
+ * 
+ * @param data - The repository data to analyze
+ * @returns Formatted prompt string
+ */
+export const buildReviewPrompt = (data: ReviewRequestData): string => {
   // Ingestion Context Setup
   const readmeContext = data.readme 
     ? `--- README ---\n${data.readme.substring(0, 6000)}\n--- END README ---`
@@ -36,7 +43,7 @@ export const generateReviewStream = async function* (data: ReviewRequestData) {
     .map(c => `${c.login}: ${c.contributions}`)
     .join(', ');
 
-  const prompt = `
+  return `
     You are an expert Principal Software Architect performing a strict audit of a codebase.
 
     **INGESTION SEQUENCE:**
@@ -104,66 +111,4 @@ export const generateReviewStream = async function* (data: ReviewRequestData) {
 
     Follow the JSON immediately with the Markdown Report.
   `;
-
-  // Retry logic for Key Rotation
-  let attempt = 0;
-  const maxAttempts = 3;
-
-  while (attempt < maxAttempts) {
-    const apiKey = KeyManager.getValidKey('gemini');
-    
-    if (!apiKey) {
-      yield { type: 'text', content: "\n\n**Error:** No valid Gemini API Key found. Please add one in Settings." };
-      return;
-    }
-
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const responseStream = await ai.models.generateContentStream({
-        model: modelId,
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }]
-          }
-        ],
-        config: {
-          thinkingConfig: { thinkingBudget: 0 }
-        }
-      });
-
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          yield { type: 'text', content: chunk.text };
-        }
-        if (chunk.usageMetadata) {
-          yield { 
-              type: 'usage', 
-              data: {
-                  input: chunk.usageMetadata.promptTokenCount,
-                  output: chunk.usageMetadata.candidatesTokenCount,
-                  total: chunk.usageMetadata.totalTokenCount
-              }
-          };
-        }
-      }
-      // If successful, exit loop
-      return;
-
-    } catch (error: any) {
-      console.error(`Gemini API Error (Attempt ${attempt + 1}):`, error);
-      
-      // Check for Rate Limit or Auth Error
-      if (error.message?.includes('429') || error.message?.includes('403')) {
-        KeyManager.markRateLimited(apiKey);
-        attempt++;
-        if (attempt === maxAttempts) {
-             yield { type: 'text', content: "\n\n**Error:** Rate limit exceeded on all available keys. Please add more keys or try again later." };
-        }
-      } else {
-        yield { type: 'text', content: `\n\n**Error:** ${error.message || 'Failed to generate review.'}` };
-        return;
-      }
-    }
-  }
 };

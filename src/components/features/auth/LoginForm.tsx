@@ -1,17 +1,42 @@
+/**
+ * Login form component for user authentication.
+ * @module components/features/auth/LoginForm
+ */
+
 import React, { useState } from 'react';
 import { Lock, User } from 'lucide-react';
-import { Button } from './Button';
-import { ADMIN_USER, ADMIN_PASS, APP_NAME } from '../constants';
+import { Button } from '../../ui/Button';
+import { ADMIN_USER, ADMIN_PASS, APP_NAME } from '../../../constants';
 
+/**
+ * LoginForm component props.
+ */
 interface LoginFormProps {
+  /** Callback when login is successful, receives JWT token */
   onLogin: (token: string) => void;
 }
 
+/**
+ * Login form with username/password authentication.
+ * Validates against environment-configured admin credentials.
+ * Generates a simulated JWT token on successful login.
+ * 
+ * @param props.onLogin - Called with generated token on successful authentication
+ * 
+ * @example
+ * <LoginForm onLogin={(token) => {
+ *   document.cookie = `auth_token=${token}`;
+ *   setIsAuthenticated(true);
+ * }} />
+ */
 export const LoginForm: React.FC<LoginFormProps> = ({ onLogin }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
 
+  /**
+   * Handles form submission and validates credentials.
+   */
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (username === ADMIN_USER && password === ADMIN_PASS) {

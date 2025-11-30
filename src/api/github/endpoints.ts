@@ -1,68 +1,61 @@
+/**
+ * GitHub API endpoints and data fetching functions.
+ * @module api/github/endpoints
+ */
 
-import { RepoInfo, Commit, FileNode, Branch, Contributor, PullRequest } from '../types';
-import { KeyManager } from './keyManager';
+import { RepoInfo, Commit, FileNode, Branch, Contributor, PullRequest } from '../../types';
+import { fetchWithRetry } from './client';
+import { GITHUB_API_BASE } from '../../constants';
 
-const GITHUB_API_BASE = 'https://api.github.com';
+// Re-export parseGithubUrl for convenience
+export { parseGithubUrl } from '../../lib/urlParser';
 
-// Wrapper for fetch that handles Key Rotation
-const fetchWithRetry = async (url: string, options: RequestInit = {}, attempt = 0): Promise<Response> => {
-  const token = KeyManager.getValidKey('github');
-  
-  const headers: Record<string, string> = {
-    'Accept': 'application/vnd.github.v3+json',
-    ...(options.headers as Record<string, string>),
-  };
+/**
+ * Result of fetching repository details.
+ */
+export interface RepoDetailsResult {
+  /** Repository metadata */
+  info: RepoInfo;
+  /** Recent commits with stats */
+  commits: Commit[];
+  /** Pull requests */
+  pullRequests: PullRequest[];
+  /** Repository files */
+  files: FileNode[];
+  /** Branches */
+  branches: Branch[];
+  /** Contributors */
+  contributors: Contributor[];
+  /** README content */
+  readme: string | null;
+  /** Language breakdown */
+  languages: Record<string, number>;
+}
 
-  if (token) {
-    headers['Authorization'] = `token ${token}`;
-  }
+/** File extensions to fetch content for during analysis */
+const INTERESTING_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.css', '.html', '.json', '.md'];
 
-  try {
-    const response = await fetch(url, { ...options, headers });
+/** Patterns to exclude from file content fetching */
+const EXCLUDED_FILE_PATTERNS = ['package-lock', 'yarn.lock', 'node_modules'];
 
-    // Handle Rate Limits (403 or 429)
-    if (response.status === 403 || response.status === 429) {
-      if (token) {
-        KeyManager.markRateLimited(token);
-        // Retry with new key if available
-        if (attempt < 5) { // Max 5 retries
-          console.log(`Rate limit hit. Rotating key and retrying (Attempt ${attempt + 1})...`);
-          return fetchWithRetry(url, options, attempt + 1);
-        }
-      }
-    }
-
-    return response;
-  } catch (error) {
-    throw error;
-  }
-};
-
-export const parseGithubUrl = (url: string): { owner: string; repo: string } | null => {
-  try {
-    const urlObj = new URL(url);
-    if (urlObj.hostname !== 'github.com') return null;
-    const parts = urlObj.pathname.split('/').filter(Boolean);
-    if (parts.length < 2) return null;
-    return { owner: parts[0], repo: parts[1] };
-  } catch (e) {
-    return null;
-  }
-};
-
-// Helper to fetch file content
+/**
+ * Fetches file contents for selected important files.
+ * Prioritizes src/ directory and root-level config files.
+ * 
+ * @param files - Array of file nodes to potentially fetch
+ * @returns Updated files array with content populated
+ * @internal
+ */
 const fetchFileContents = async (files: FileNode[]): Promise<FileNode[]> => {
-  const interestingExtensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.css', '.html', '.json', '.md'];
-  
   const sortedFiles = [...files].sort((a, b) => {
-      const aScore = (a.path.startsWith('src/') ? 2 : 0) + (a.path.split('/').length === 1 ? 1 : 0);
-      const bScore = (b.path.startsWith('src/') ? 2 : 0) + (b.path.split('/').length === 1 ? 1 : 0);
-      return bScore - aScore;
+    const aScore = (a.path.startsWith('src/') ? 2 : 0) + (a.path.split('/').length === 1 ? 1 : 0);
+    const bScore = (b.path.startsWith('src/') ? 2 : 0) + (b.path.split('/').length === 1 ? 1 : 0);
+    return bScore - aScore;
   });
 
   const candidates = sortedFiles
-    .filter(f => interestingExtensions.some(ext => f.path.endsWith(ext)))
-    .filter(f => !f.path.includes('package-lock') && !f.path.includes('yarn.lock') && !f.path.includes('node_modules'))
+    .filter(f => INTERESTING_EXTENSIONS.some(ext => f.path.endsWith(ext)))
+    .filter(f => !EXCLUDED_FILE_PATTERNS.some(pattern => f.path.includes(pattern)))
     .slice(0, 15);
 
   const updatedFiles = [...files];
@@ -73,11 +66,11 @@ const fetchFileContents = async (files: FileNode[]): Promise<FileNode[]> => {
       if (res.ok) {
         const data = await res.json();
         if (data.content && data.encoding === 'base64') {
-           const content =  decodeURIComponent(escape(atob(data.content.replace(/\s/g, ''))));
-           const index = updatedFiles.findIndex(f => f.sha === file.sha);
-           if (index !== -1) {
-             updatedFiles[index] = { ...updatedFiles[index], content: content.substring(0, 8000) }; 
-           }
+          const content = decodeURIComponent(escape(atob(data.content.replace(/\s/g, ''))));
+          const index = updatedFiles.findIndex(f => f.sha === file.sha);
+          if (index !== -1) {
+            updatedFiles[index] = { ...updatedFiles[index], content: content.substring(0, 8000) };
+          }
         }
       }
     } catch (e) {
@@ -88,7 +81,14 @@ const fetchFileContents = async (files: FileNode[]): Promise<FileNode[]> => {
   return updatedFiles;
 };
 
-// Helper to fetch detailed stats for top commits
+/**
+ * Enriches commits with detailed stats (additions, deletions, files changed).
+ * Only fetches details for the top 15 commits to limit API calls.
+ * 
+ * @param commits - Array of commits to enrich
+ * @returns Commits with stats populated
+ * @internal
+ */
 const enrichCommitsWithStats = async (commits: Commit[]): Promise<Commit[]> => {
   const topCommits = commits.slice(0, 15);
   const remaining = commits.slice(15);
@@ -101,7 +101,7 @@ const enrichCommitsWithStats = async (commits: Commit[]): Promise<Commit[]> => {
         return {
           ...c,
           stats: data.stats,
-          filesModified: data.files?.map((f: any) => ({
+          filesModified: data.files?.map((f: { filename: string; status: string; patch?: string }) => ({
             filename: f.filename,
             status: f.status,
             patch: f.patch
@@ -117,17 +117,21 @@ const enrichCommitsWithStats = async (commits: Commit[]): Promise<Commit[]> => {
   return [...enriched, ...remaining];
 };
 
-export const fetchRepoDetails = async (owner: string, repo: string): Promise<{
-  info: RepoInfo;
-  commits: Commit[];
-  pullRequests: PullRequest[];
-  files: FileNode[];
-  branches: Branch[];
-  contributors: Contributor[];
-  readme: string | null;
-  languages: Record<string, number>;
-}> => {
-
+/**
+ * Fetches comprehensive repository details from GitHub API.
+ * Includes repo info, commits, PRs, files, branches, contributors, readme, and languages.
+ * 
+ * @param owner - Repository owner (username or organization)
+ * @param repo - Repository name
+ * @returns Complete repository details
+ * 
+ * @throws Error if repository not found or rate limit exceeded
+ * 
+ * @example
+ * const details = await fetchRepoDetails('facebook', 'react');
+ * console.log(details.info.stargazers_count);
+ */
+export const fetchRepoDetails = async (owner: string, repo: string): Promise<RepoDetailsResult> => {
   // 1. Fetch Repo Info
   const infoRes = await fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}`);
   
@@ -138,9 +142,9 @@ export const fetchRepoDetails = async (owner: string, repo: string): Promise<{
   if (!infoRes.ok) throw new Error('Repository not found or private');
   const info: RepoInfo = await infoRes.json();
 
-  // Helper for parallel fetching
+  // Parallel fetching for efficiency
   const [commitsRes, pullsRes, branchesRes, contributorsRes, treeRes, readmeRes, langsRes] = await Promise.all([
-    fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?per_page=30`), 
+    fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?per_page=30`),
     fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/pulls?state=all&per_page=10`),
     fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/branches?per_page=50`),
     fetchWithRetry(`${GITHUB_API_BASE}/repos/${owner}/${repo}/contributors?per_page=50`),
@@ -158,7 +162,7 @@ export const fetchRepoDetails = async (owner: string, repo: string): Promise<{
   
   const commits = await enrichCommitsWithStats(rawCommits);
 
-  const branches: Branch[] = Array.isArray(branchesData) ? branchesData.map((b: any) => ({
+  const branches: Branch[] = Array.isArray(branchesData) ? branchesData.map((b: Branch) => ({
     ...b,
     html_url: `https://github.com/${owner}/${repo}/tree/${b.name}`
   })) : [];
